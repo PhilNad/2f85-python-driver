@@ -176,22 +176,23 @@ class Robotiq2F85Driver:
     
     def count_to_opening(self, count:int):
         '''Converts a count to an opening in millimeters'''
-        opening = (255 - count) * 0.4
+        count = min(max(count, 0), 255)
+        opening = (230 - count) * 0.39
         opening = min(max(opening, 0), 85)
         return opening
     
     def opening_to_count(self, opening:float):
         '''Converts an opening in millimeters to a count'''
-        count = 255 - opening / 0.4
-        count = min(max(count, 0), 255)
+        opening = min(max(opening, 0), 85)
+        count = 230 - (opening / 0.39)
         return int(count)
     
     def count_to_speed(self, count:int):
         '''Converts a count to a speed in mm/s
         The speed is between 20-150 mm/s for counts 0-255.
         '''
-        speed = count / 255 * (150 - 20) + 20
-        speed = min(max(speed, 0), 255)
+        count = min(max(count, 0), 255)
+        speed = (count / 255) * (150 - 20) + 20
         return speed
     
     def speed_to_count(self, speed:float):
@@ -206,7 +207,7 @@ class Robotiq2F85Driver:
         '''Converts a count to a force in N
         The force is between 20-235 N for counts 0-255.
         '''
-        force = count / 255 * (235 - 20) + 20
+        force = (count / 255) * (235 - 20) + 20
         force = min(max(force, 0), 255)
         return force
     
