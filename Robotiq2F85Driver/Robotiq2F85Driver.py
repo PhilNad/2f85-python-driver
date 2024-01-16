@@ -1,5 +1,3 @@
-from robotiq_modbus_controller.request import Request as RobotiqModbusRtuRequest
-from robotiq_modbus_controller.status import Status as RobotiqModbusRtuStatus
 from pathlib import Path
 import subprocess
 import minimalmodbus as mm
@@ -85,8 +83,10 @@ class GripperFault:
     reactivation_required: bool
     #Activation bit must be set prior to action.
     activation_required: bool
-    #Gripper's temperature has risen too high and it needs to cool down.
+    #Gripper's temperature has risen above 85C and it needs to cool down.
     overheating: bool
+    #There was no communication within the last second
+    communication_timeout: bool
     #The voltage supplied to the gripper is below 21.6 Volts
     undervoltage: bool
     #Automatic release in progress
@@ -104,10 +104,13 @@ class GripperFault:
 class GripperStatus:
     activated: bool
     moving: bool
+    #In milliamps
     current: float
     obj_detected: bool
-    position: float
-    goal_position: float
+    #In millimeters
+    opening: float
+    #In millimeters
+    goal_opening: float
     is_reset: bool
     is_activating: bool
     is_activated: bool
@@ -128,9 +131,164 @@ class Robotiq2F85Driver:
         self.client.serial.bytesize = 8
         self.client.serial.stopbits = mm.serial.STOPBITS_ONE
 
-    def read_status(self) -> RobotiqModbusRtuStatus:
+    @property
+    def opening(self):
+        '''Current opening in millimeters'''
+        return self.read_status().opening
+    
+    @property
+    def goal_opening(self):
+        '''Goal opening in millimeters'''
+        return self.read_status().goal_opening
+    
+    @property
+    def current(self):
+        '''Current in milliamps'''
+        return self.read_status().current
+    
+    @property
+    def is_reset(self):
+        return self.read_status().is_reset
+    
+    @property
+    def is_activating(self):
+        return self.read_status().is_activating
+    
+    @property
+    def is_activated(self):
+        return self.read_status().is_activated
+    
+    @property
+    def is_moving(self):
+        return self.read_status().moving
+    
+    @property
+    def is_activated(self):
+        return self.read_status().activated
+    
+    @property
+    def object_detected(self):
+        return self.read_status().obj_detected
+    
+    @property
+    def in_fault(self):
+        fault = self.read_status().fault
+        return fault.reactivation_required or fault.activation_required or fault.overheating or fault.undervoltage or fault.internal_fault or fault.activation_fault or fault.overcurrent
+    
+    def count_to_opening(self, count:int):
+        '''Converts a count to an opening in millimeters'''
+        opening = (255 - count) * 0.4
+        opening = min(max(opening, 0), 0.085)
+        return opening
+    
+    def opening_to_count(self, opening:float):
+        '''Converts an opening in millimeters to a count'''
+        count = 255 - opening / 0.4
+        count = min(max(count, 0), 255)
+        return int(count)
+    
+    def count_to_speed(self, count:int):
+        '''Converts a count to a speed in mm/s
+        The speed is between 20-150 mm/s for counts 0-255.
+        '''
+        speed = count / 255 * (150 - 20) + 20
+        speed = min(max(speed, 0), 255)
+        return speed
+    
+    def speed_to_count(self, speed:float):
+        '''Converts a speed in mm/s to a count.
+        The speed is between 20-150 mm/s for counts 0-255.
+        '''
+        count = (speed - 20) / (150 - 20) * 255
+        count = min(max(count, 0), 255)
+        return int(count)
+    
+    def count_to_force(self, count:int):
+        '''Converts a count to a force in N
+        The force is between 20-235 N for counts 0-255.
+        '''
+        force = count / 255 * (235 - 20) + 20
+        force = min(max(force, 0), 255)
+        return force
+    
+    def force_to_count(self, force:float):
+        '''Converts a force in N to a count
+        The force is between 20-235 N for counts 0-255.
+        '''
+        count = (force - 20) / (235 - 20) * 255
+        count = min(max(count, 0), 255)
+        return int(count)
+    
+    def count_to_current(self, count:int):
+        '''Converts a count to a current in mA'''
+        current = count * 0.1
+        return current
+
+    def activate(self, blocking_call:bool=True):
+        '''
+        Activate the gripper.
+        '''
+        action_request_register   = 1
+        gripper_options1_register = 0
+        self.client.write_registers(registeraddress=1000, values=[action_request_register, gripper_options1_register])
+
+        if blocking_call:
+            #Read the status until the gripper is activated
+            while not self.is_activated:
+                pass
+
+    def deactivate(self, blocking_call:bool=True):
+        '''
+        Deactivate the gripper.
+        '''
+        action_request_register   = 0
+        gripper_options1_register = 0
+        self.client.write_registers(registeraddress=1000, values=[action_request_register, gripper_options1_register])
+
+        if blocking_call:
+            #Read the status until the gripper is deactivated
+            while self.is_activated:
+                pass
+
+    def go_to(self, opening:float, speed:float, force:float, blocking_call:bool=True):
+        '''
+        Move the gripper to the specified opening, speed and force.
+
+        Parameters:
+        -----------
+        opening : float
+            Opening in millimeters. Must be between 0 and 85 mm.
+        speed : float
+            Speed in mm/s. Must be between 20 and 150 mm/s.
+        force : float
+            Force in N. Must be between 20 and 235 N.
+        '''
+        opening_count = self.opening_to_count(opening)
+        speed_count   = self.speed_to_count(speed)
+        force_count   = self.force_to_count(force)
+
+        #Byte 0
+        action_request_register = 2**0 + 2**3
+        #Byte 1
+        gripper_options1_register = 0
+        #Byte 2
+        gripper_options2_register = 0
+        #Byte 3
+        position_request_register = opening_count
+        #Byte 4
+        speed_register = speed_count
+        #Byte 5
+        force_register = force_count
+
+        self.client.write_registers(registeraddress=1000, values=[action_request_register, gripper_options1_register, gripper_options2_register, position_request_register, speed_register, force_register])
+
+        if blocking_call:
+            #Read the status until the gripper is stopped
+            while self.is_moving:
+                pass
+
+    def read_status(self) -> GripperStatus:
         values = self.client.read_registers(registeraddress=2000, number_of_registers=3, functioncode=4)
-        status = RobotiqModbusRtuStatus.from_registers(values)
         #Each register is 16 bits and therefore contains two unsigned char each
         gripper_status_register, reserved_register            = struct.unpack("BB", values[0].to_bytes(2, "big"))
         fault_status_register, position_request_echo_register = struct.unpack("BB", values[1].to_bytes(2, "big"))
@@ -139,31 +297,31 @@ class Robotiq2F85Driver:
         status = GripperStatus
 
         gripper_fault = GripperFault
-        gripper_fault.reactivation_required: bool
-        gripper_fault.activation_required: bool
-        gripper_fault.overheating: bool
-        gripper_fault.undervoltage: bool
-        gripper_fault.is_auto_releasing: bool
-        gripper_fault.auto_release_completed: bool
-        gripper_fault.internal_fault: bool
-        gripper_fault.activation_fault: bool
-        gripper_fault.overcurrent: bool
+        gripper_fault.reactivation_required = bool(fault_status_register == 0x05)
+        gripper_fault.activation_required   = bool(fault_status_register == 0x07)
+        gripper_fault.overheating           = bool(fault_status_register == 0x08)
+        gripper_fault.undervoltage          = bool(fault_status_register == 0x0A)
+        gripper_fault.is_auto_releasing     = bool(fault_status_register == 0x0B)
+        gripper_fault.internal_fault        = bool(fault_status_register == 0x0C)
+        gripper_fault.activation_fault      = bool(fault_status_register == 0x0D)
+        gripper_fault.overcurrent           = bool(fault_status_register == 0x0E)
+        gripper_fault.auto_release_completed= bool(fault_status_register == 0x0F)
         status.fault = gripper_fault
 
-        status.activated: bool
-        status.moving: bool
-        status.current: float
-        status.obj_detected: bool
-        status.position: float
-        status.goal_position: float
-        status.is_reset: bool
-        status.is_activating: bool
-        status.is_activated: bool
+        status.activated        = bool(gripper_status_register & 2**0)
+        status.moving           = bool(gripper_status_register & 2**3)
+        status.is_reset         = not bool(gripper_status_register & 2**4) and not bool(gripper_status_register & 2**5)
+        status.is_activating    = bool(gripper_status_register & 2**4) and not bool(gripper_status_register & 2**5)
+        status.is_activated     = bool(gripper_status_register & 2**4) and bool(gripper_status_register & 2**5)
+        status.obj_detected     = ( bool(gripper_status_register & 2**6) and not bool(gripper_status_register & 2**7) ) or ( not bool(gripper_status_register & 2**6) and bool(gripper_status_register & 2**7) )
+        
+        status.goal_opening = self.count_to_opening(position_request_echo_register)
+        status.current = self.count_to_current(current_register)
+        status.opening = self.count_to_opening(position_register)
 
         return status
-
     
 
 if __name__ == '__main__':
     robotiq_2f85_driver = Robotiq2F85Driver(serial_number='DAK1RLYZ')
-    status = robotiq_2f85_driver.read_status()
+    
