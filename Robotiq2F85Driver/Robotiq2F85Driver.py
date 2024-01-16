@@ -4,6 +4,7 @@ import minimalmodbus as mm
 from dataclasses import dataclass
 import struct
 import math
+import time
 
 class LinuxFindTTYWithSerialNumber:
     def __init__(self):
@@ -115,18 +116,19 @@ class GripperStatus:
     is_reset: bool
     is_activating: bool
     is_activated: bool
-    fault: GripperFault = GripperFault(0,0,0,0,0,0,0,0,0)
+    fault: GripperFault = GripperFault(0,0,0,0,0,0,0,0,0,0)
 
 
 class Robotiq2F85Driver:
-    def __init__(self, serial_number:str):
+    def __init__(self, serial_number:str, debug=False):
+        self.debug = debug
         self.device_serial_number = serial_number
         self.tty_device = LinuxFindTTYWithSerialNumber().find(serial_number)
         
         if self.tty_device is None:
             raise Exception('No device with serial number {} found.'.format(serial_number))
         
-        self.client = mm.Instrument(port=self.tty_device, slaveaddress=9, mode=mm.MODE_RTU)
+        self.client = mm.Instrument(port=self.tty_device, slaveaddress=9, mode=mm.MODE_RTU, debug=self.debug)
         self.client.serial.baudrate = 115200
         self.client.serial.parity   = mm.serial.PARITY_NONE
         self.client.serial.bytesize = 8
@@ -164,10 +166,6 @@ class Robotiq2F85Driver:
         return self.read_status().moving
     
     @property
-    def is_activated(self):
-        return self.read_status().activated
-    
-    @property
     def object_detected(self):
         return self.read_status().obj_detected
     
@@ -179,7 +177,7 @@ class Robotiq2F85Driver:
     def count_to_opening(self, count:int):
         '''Converts a count to an opening in millimeters'''
         opening = (255 - count) * 0.4
-        opening = min(max(opening, 0), 0.085)
+        opening = min(max(opening, 0), 85)
         return opening
     
     def opening_to_count(self, opening:float):
@@ -229,11 +227,14 @@ class Robotiq2F85Driver:
         '''
         Activate the gripper.
         '''
-        action_request_register   = 1
+        action_request_register   = 1 << 8
         gripper_options1_register = 0
-        self.client.write_registers(registeraddress=1000, values=[action_request_register, gripper_options1_register])
+        self.client.write_registers(registeraddress=1000, values=[action_request_register + gripper_options1_register])
 
         if blocking_call:
+            #Read the status while the gripper is activating
+            while self.is_activating:
+                pass
             #Read the status until the gripper is activated
             while not self.is_activated:
                 pass
@@ -242,9 +243,9 @@ class Robotiq2F85Driver:
         '''
         Deactivate the gripper.
         '''
-        action_request_register   = 0
+        action_request_register   = 0 << 8
         gripper_options1_register = 0
-        self.client.write_registers(registeraddress=1000, values=[action_request_register, gripper_options1_register])
+        self.client.write_registers(registeraddress=1000, values=[action_request_register + gripper_options1_register])
 
         if blocking_call:
             #Read the status until the gripper is deactivated
@@ -318,7 +319,7 @@ class Robotiq2F85Driver:
         force_count   = self.force_to_count(force)
 
         #Byte 0
-        action_request_register = 2**0 + 2**3
+        action_request_register = (2**0 + 2**3) << 8
         #Byte 1
         gripper_options1_register = 0
         #Byte 2
@@ -326,11 +327,13 @@ class Robotiq2F85Driver:
         #Byte 3
         position_request_register = opening_count
         #Byte 4
-        speed_register = speed_count
+        speed_register = speed_count << 8
         #Byte 5
         force_register = force_count
 
-        self.client.write_registers(registeraddress=1000, values=[action_request_register, gripper_options1_register, gripper_options2_register, position_request_register, speed_register, force_register])
+        self.client.write_registers(registeraddress=1000, values=[action_request_register + gripper_options1_register, 
+                                                                  gripper_options2_register + position_request_register, 
+                                                                  speed_register + force_register])
 
         if blocking_call:
             #Read the status until the gripper is stopped
@@ -359,7 +362,7 @@ class Robotiq2F85Driver:
         status.fault = gripper_fault
 
         status.activated        = bool(gripper_status_register & 2**0)
-        status.moving           = bool(gripper_status_register & 2**3)
+        status.moving           = bool(gripper_status_register & 2**3) and (not bool(gripper_status_register & 2**6) and not bool(gripper_status_register & 2**7))
         status.is_reset         = not bool(gripper_status_register & 2**4) and not bool(gripper_status_register & 2**5)
         status.is_activating    = bool(gripper_status_register & 2**4) and not bool(gripper_status_register & 2**5)
         status.is_activated     = bool(gripper_status_register & 2**4) and bool(gripper_status_register & 2**5)
@@ -368,6 +371,39 @@ class Robotiq2F85Driver:
         status.goal_opening = self.count_to_opening(position_request_echo_register)
         status.current = self.count_to_current(current_register)
         status.opening = self.count_to_opening(position_register)
+
+        #Print the status of the gripper
+        if self.debug:
+            print("Gripper Status: ")
+            print("\tActivated: {}".format(status.activated))
+            print("\tMoving: {}".format(status.activated))
+            print("\tIs Reset: {}".format(status.activated))
+            print("\tIs Activating: {}".format(status.is_activating))
+            print("\tIs Activated: {}".format(status.is_activated))
+            print("\tObj Detected: {}".format(status.obj_detected))
+            print("\tFaults: ",end='')
+            if gripper_fault.reactivation_required:
+                print("Reactivation required, ", end='')
+            if gripper_fault.activation_required:
+                print("Activation required, ",end='')
+            if gripper_fault.overheating:
+                print("Overheating, ",end='')
+            if gripper_fault.undervoltage:
+                print("Undervoltage, ",end='')
+            if gripper_fault.is_auto_releasing:
+                print("Is auto-releasing, ",end='')
+            if gripper_fault.internal_fault:
+                print("Internal fault, ",end='')
+            if gripper_fault.activation_fault:
+                print("Activation fault, ",end='')
+            if gripper_fault.overcurrent:
+                print("Overcurrent, ",end='')
+            if gripper_fault.auto_release_completed:
+                print("Auto-release completed", end='')
+            print()
+
+        #The maximum rate at which readings/commands can be sent is 200Hz
+        time.sleep(5/1000)
 
         return status
     
