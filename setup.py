@@ -7,7 +7,7 @@ setup(
     author='Philippe Nadeau',
     author_email='philippe.nadeau@robotics.utias.utoronto.ca',
     license='MIT',
-    packages=['Robotiq2f85Driver'],
+    packages=['Robotiq2F85Driver'],
     install_requires=['minimalmodbus>=2.1'],
     python_requires=">=3.8",
     include_package_data=True
