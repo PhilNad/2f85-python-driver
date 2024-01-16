@@ -3,6 +3,7 @@ import subprocess
 import minimalmodbus as mm
 from dataclasses import dataclass
 import struct
+import math
 
 class LinuxFindTTYWithSerialNumber:
     def __init__(self):
@@ -250,6 +251,55 @@ class Robotiq2F85Driver:
             while self.is_activated:
                 pass
 
+    def reset(self, blocking_call:bool=True):
+        '''
+        Reset the gripper.
+        '''
+        self.deactivate(blocking_call)
+        self.activate(blocking_call)
+
+    def tcp_Z_from_opening(self, opening:float, pad_thickness:float=7.8):
+        '''
+        Returns the distance between the gripper base frame and the middle of the fingertips
+        when the distance between the fingertips is `opening` and the pad thickness is `pad_thickness`.
+
+        Parameters
+        ----------
+        opening : float
+            Distance between the fingertips. Fully open is 85mm, and fully closed is 0mm.
+        pad_thickness : float
+            Thickness of the pads. Default is 7.8mm (silicone pads).
+        '''
+        #Distance from the Z axis to the farthest side of the fingertip
+        d = opening/2 + pad_thickness
+        if d < 12.7:
+            tcp_z = 87.308 + 57.15*math.sqrt(1 - ((12.7 - d) / 57.15)**2)
+        else:
+            tcp_z = 87.308 + 57.15*math.sqrt(1 - ((d - 12.7) / 57.15)**2)
+        return tcp_z
+    
+    def tcp_Z_offset(self, desired_opening:float, pad_thickness:float=7.8):
+        '''
+        Returns the distance along the gripper Z+ axis that the TCP (fixed at the middle of the fingertip)
+        will move when the gripper goes from its current opening to the desired opening.
+
+        This can be used to compensate for the gripper's movement when the opening is changed such that
+        the TCP ends up at the desired position. This requires knowing the thickness of the object to be
+        grasped. The robot can be moved to compensate for this offset prior to grasping the object.
+
+        Parameters
+        ----------
+        desired_opening : float
+            Desired opening in millimeters.
+        pad_thickness : float
+            Thickness of the pads. Default is 7.8mm (silicone pads).
+        '''
+        current_opening = self.opening
+        current_tcp_z = self.tcp_Z_from_opening(current_opening, pad_thickness)
+        desired_tcp_z = self.tcp_Z_from_opening(desired_opening, pad_thickness)
+        tcp_z_offset = desired_tcp_z - current_tcp_z
+        return tcp_z_offset
+
     def go_to(self, opening:float, speed:float, force:float, blocking_call:bool=True):
         '''
         Move the gripper to the specified opening, speed and force.
@@ -324,4 +374,8 @@ class Robotiq2F85Driver:
 
 if __name__ == '__main__':
     robotiq_2f85_driver = Robotiq2F85Driver(serial_number='DAK1RLYZ')
+    robotiq_2f85_driver.reset()
+    robotiq_2f85_driver.go_to(opening=50, speed=150, force=235)
+    print(robotiq_2f85_driver.opening)
+
     
