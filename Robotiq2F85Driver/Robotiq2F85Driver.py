@@ -412,7 +412,7 @@ class Robotiq2F85Driver:
 if __name__ == '__main__':
     robotiq_2f85_driver = Robotiq2F85Driver(serial_number='DAK1RLYZ')
     robotiq_2f85_driver.reset()
-    robotiq_2f85_driver.go_to(opening=50, speed=150, force=235)
+    robotiq_2f85_driver.go_to(opening=85, speed=150, force=235)
     print(robotiq_2f85_driver.opening)
 
     
