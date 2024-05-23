@@ -19,6 +19,12 @@ pip install .
 
 executed from the root directory of the repository.
 
+To allow access to the serial connection, you will also need to add make your user a member of the `dialout` group with
+```bash
+sudo adduser $USER dialout
+```
+and logout/login to refresh the membership.
+
 ## Usage
 
 ```python
